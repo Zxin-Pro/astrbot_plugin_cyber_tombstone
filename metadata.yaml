@@ -1,5 +1,5 @@
 name: astrbot_plugin_cyber_tombstone
 desc: 🪦 赛博墓碑 —— 自动检测群内长期潜水的群友，为其生成庄重又搞笑的赛博墓碑图片与悼词，送 TA 体面"归于潜水"。注意：本插件会记录群消息内容（仅本地 SQLite 存储）用于统计潜水用户，可用 /tomb forget 随时删除某人全部记录。
-version: v1.0.4
+version: v1.0.5
 author: Zxin_Pro
 repo: https://github.com/Zxin-Pro/astrbot_plugin_cyber_tombstone

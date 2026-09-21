@@ -1,7 +1,7 @@
 """astrbot_plugin_cyber_tombstone - 赛博墓碑
 
-自动检测群内长期潜水的群友，生成庄重又搞笑的"赛博墓碑"图片与悼词。
-指令统一入口 /tomb：help|scan|bury|list|forget|forget_all|revive|config|debug
+指令统一入口 /墓碑（英文 /tomb 仅作兼容）：
+预览 | 立碑 | 潜水名单 | 墓碑列表 | 复活 | 遗忘 | 清空 | 配置 | 诊断 | 初始化
 """
 
 import asyncio
@@ -109,7 +109,7 @@ async def _call_onebot_api(bot, action: str, **params):
     raise RuntimeError("当前平台不支持 OneBot API 调用")
 
 PLUGIN_NAME = "astrbot_plugin_cyber_tombstone"
-PLUGIN_VERSION = "v1.0.4"
+PLUGIN_VERSION = "v1.0.5"
 
 FLUSH_INTERVAL = 5          # 内存缓冲 flush 周期（秒）
 FLUSH_BATCH = 100           # 缓冲达到该条数立即 flush
@@ -118,19 +118,26 @@ LLM_TIMEOUT = 30            # LLM 悼词超时（秒）
 AUTO_BURY_LIMIT = 10        # 自动扫描单群最多立碑人数
 AUTO_BURY_FLOOD = 20        # 潜水人数超过该值时只取最早发言的 10 人
 
-# 中文子指令别名 → 内部英文（英文原名保持兼容）
+# 中文子指令别名 → 内部标识（英文仅作兼容，不对外展示）
 SUB_ALIASES = {
-    "帮助": "help", "说明": "help",
-    "配置": "config",
-    "诊断": "debug",
-    "潜水名单": "scan", "扫描": "scan", "潜水": "scan",
-    "墓碑列表": "list", "碑录": "list", "列表": "list",
-    "立碑": "bury", "安葬": "bury", "埋": "bury",
-    "遗忘": "forget", "抹去": "forget",
-    "全部遗忘": "forget_all", "清空": "forget_all",
-    "复活": "revive",
-    "初始化": "backfill", "回溯": "backfill", "补录": "backfill",
-    "init": "backfill",
+    "帮助": "帮助", "说明": "帮助", "菜单": "帮助",
+    "配置": "配置", "设置": "配置",
+    "诊断": "诊断", "调试": "诊断",
+    "潜水名单": "潜水名单", "扫描": "潜水名单", "潜水": "潜水名单", "名单": "潜水名单",
+    "墓碑列表": "墓碑列表", "碑录": "墓碑列表", "列表": "墓碑列表",
+    "立碑": "立碑", "安葬": "立碑", "埋": "立碑",
+    "遗忘": "遗忘", "抹去": "遗忘",
+    "全部遗忘": "清空", "清空": "清空",
+    "复活": "复活",
+    "初始化": "初始化", "回溯": "初始化", "补录": "初始化",
+}
+
+# 英文子指令兼容映射（仅保证老用户不断，帮助文案中不出现）
+EN_ALIASES = {
+    "help": "帮助", "config": "配置", "debug": "诊断",
+    "scan": "潜水名单", "list": "墓碑列表", "bury": "立碑",
+    "forget": "遗忘", "forget_all": "清空", "revive": "复活",
+    "init": "初始化", "backfill": "初始化",
 }
 
 
@@ -273,12 +280,14 @@ class CyberTombstone(Star):
 
     # ---------------- 指令入口 ----------------
 
-    @filter.command("tomb", alias=["墓碑", "赛博墓碑"])
+    @filter.command("墓碑", alias=["赛博墓碑", "tomb"])
     async def tomb_command(self, event: AstrMessageEvent):
         tokens = [t for t in (event.message_str or "").strip().split() if t]
         if tokens and tokens[0].lstrip("/").lower() in ("tomb", "墓碑", "赛博墓碑"):
             tokens = tokens[1:]
-        sub = tokens[0].lstrip("/").lower() if tokens else ""
+        sub = tokens[0].lstrip("/") if tokens else ""
+        # 英文子指令同样归一化为中文标识（纯兼容，不再对外宣传）
+        sub = EN_ALIASES.get(sub.lower(), sub)
         sub = SUB_ALIASES.get(sub, sub)
 
         group_id = str(event.get_group_id() or "").strip()
@@ -287,8 +296,8 @@ class CyberTombstone(Star):
             return
 
         try:
-            if sub in ("", "help", "帮助"):
-                # 裸 /tomb @某人 → 预览墓碑（不立碑）
+            if sub in ("", "帮助"):
+                # 裸 /墓碑 @某人 → 预览墓碑（不立碑）
                 target = self._extract_target(event, tokens) if sub == "" else None
                 if target:
                     async for r in self._make_tombstone(event, group_id, target,
@@ -296,23 +305,23 @@ class CyberTombstone(Star):
                         yield r
                 else:
                     yield event.plain_result(self._help_text())
-            elif sub == "config":
+            elif sub == "配置":
                 yield event.plain_result(self._config_text())
-            elif sub == "debug":
+            elif sub == "诊断":
                 yield event.plain_result(await self._debug_text())
-            elif sub == "backfill":
+            elif sub == "初始化":
                 async for r in self._cmd_backfill(event, group_id):
                     yield r
-            elif sub == "scan":
+            elif sub == "潜水名单":
                 async for r in self._cmd_scan(event, group_id):
                     yield r
-            elif sub == "list":
+            elif sub == "墓碑列表":
                 async for r in self._cmd_list(event, group_id):
                     yield r
-            elif sub == "bury":
+            elif sub == "立碑":
                 async for r in self._cmd_bury(event, group_id):
                     yield r
-            elif sub in ("forget", "forget_all", "revive"):
+            elif sub in ("遗忘", "清空", "复活"):
                 async for r in self._cmd_privacy(event, group_id, sub):
                     yield r
             else:
@@ -350,10 +359,18 @@ class CyberTombstone(Star):
 
     def _config_text(self) -> str:
         lines = ["🪦 赛博墓园 · 当前配置"]
-        for key in ("inactive_days", "auto_scan_enabled", "auto_scan_time",
-                    "push_target", "max_scan_results", "enable_image_render",
-                    "enable_record", "message_retention_days"):
-            lines.append(f"· {key}: {self._cfg(key, '(默认)')}")
+        for key, label in (
+            ("inactive_days", "潜水判定阈值（天）"),
+            ("auto_scan_enabled", "自动扫描"),
+            ("auto_scan_time", "自动扫描时间"),
+            ("push_target", "推送目标群"),
+            ("max_scan_results", "单次扫描人数上限"),
+            ("enable_image_render", "图片渲染"),
+            ("enable_record", "记录群消息"),
+            ("message_retention_days", "消息保留天数"),
+            ("history_max_count", "初始化回溯上限"),
+        ):
+            lines.append(f"· {label}：{self._cfg(key, '(默认)')}")
         return "\n".join(lines)
 
     async def _debug_text(self) -> str:
@@ -424,7 +441,7 @@ class CyberTombstone(Star):
             yield r
 
     async def _cmd_privacy(self, event: AstrMessageEvent, group_id: str, sub: str):
-        if sub == "forget_all":
+        if sub == "清空":
             if not self._is_admin(event):
                 yield event.plain_result("⛔ 该指令仅管理员可用。")
                 return
@@ -435,10 +452,10 @@ class CyberTombstone(Star):
             return
         target = self._extract_target(event, [])
         if not target:
-            yield event.plain_result(f"用法：/墓碑 {'遗忘' if sub == 'forget' else '复活'} @某人")
+            yield event.plain_result(f"用法：/墓碑 {'遗忘' if sub == '遗忘' else '复活'} @某人")
             return
         user_id, user_name = target
-        if sub == "forget":
+        if sub == "遗忘":
             n = await self.db.forget(group_id, user_id)
             if n:
                 yield event.plain_result(
