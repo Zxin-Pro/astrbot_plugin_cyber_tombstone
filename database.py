@@ -49,6 +49,14 @@ CREATE TABLE IF NOT EXISTS tombs (
     bury_time INTEGER NOT NULL,
     UNIQUE (group_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS backfills (
+    group_id TEXT PRIMARY KEY,
+    oldest_seq INTEGER,
+    oldest_ts INTEGER,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
 """
 
 
@@ -215,6 +223,41 @@ class TombDatabase:
         await self.db.commit()
         return cur.rowcount > 0
 
+    # ---------- 历史回溯游标 ----------
+
+    async def get_backfill(self, group_id: str) -> Optional[dict]:
+        cur = await self._execute(
+            "SELECT * FROM backfills WHERE group_id = ?", (group_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def set_backfill(self, group_id: str, oldest_seq: int, oldest_ts: int,
+                           batch_count: int):
+        """每批回溯后更新游标（seq/ts 取 MIN，计数累加）。"""
+        await self._execute(
+            "INSERT INTO backfills (group_id, oldest_seq, oldest_ts, message_count, "
+            "updated_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (group_id) DO UPDATE SET "
+            "oldest_seq = MIN(COALESCE(backfills.oldest_seq, excluded.oldest_seq), "
+            "excluded.oldest_seq), "
+            "oldest_ts = MIN(COALESCE(backfills.oldest_ts, excluded.oldest_ts), "
+            "excluded.oldest_ts), "
+            "message_count = backfills.message_count + excluded.message_count, "
+            "updated_at = excluded.updated_at",
+            (group_id, oldest_seq, oldest_ts, batch_count, int(time.time())),
+        )
+        await self.db.commit()
+
+    async def group_summary(self, group_id: str) -> dict:
+        cur = await self._execute(
+            "SELECT COUNT(DISTINCT user_id) AS users, COUNT(*) AS msgs, "
+            "MIN(first_seen) AS first_seen FROM users WHERE group_id = ?",
+            (group_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else {}
+
     # ---------- 隐私 / 维护 ----------
 
     async def forget(self, group_id: str, user_id: str) -> int:
@@ -232,7 +275,7 @@ class TombDatabase:
     async def forget_all(self, group_id: str) -> int:
         """清空本群所有记录，返回删除条数。"""
         deleted = 0
-        for table in ("messages", "users", "tombs"):
+        for table in ("messages", "users", "tombs", "backfills"):
             cur = await self._execute(
                 f"DELETE FROM {table} WHERE group_id = ?", (group_id,)
             )

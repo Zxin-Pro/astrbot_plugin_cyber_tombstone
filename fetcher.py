@@ -1,6 +1,7 @@
 """astrbot_plugin_cyber_tombstone - 数据聚合 + 悼词生成（LLM / 本地模板降级）"""
 
 import asyncio
+import re
 import time
 from typing import Optional, Tuple
 
@@ -21,6 +22,52 @@ EPITAPH_PROMPT = """你是一位庄重又幽默的追悼会主持人。请为以
 
 class FetchError(Exception):
     pass
+
+
+# ---------------- 历史消息解析（初始化回溯用） ----------------
+
+CQ_RE = re.compile(r"\[CQ:([a-zA-Z]+)[^\]]*\]")
+CQ_PLACEHOLDERS = {
+    "image": "[图片]", "record": "[语音]", "video": "[视频]",
+    "face": "[表情]", "forward": "[合并转发]", "json": "[卡片]", "xml": "[卡片]",
+}
+
+
+def strip_cq(text: str) -> str:
+    """把 CQ 码替换为可读占位符（at 丢弃，其余映射，未知丢弃）。"""
+    return CQ_RE.sub(lambda m: CQ_PLACEHOLDERS.get(m.group(1), ""), text or "")
+
+
+def _text_from_segments(message) -> str:
+    """message 段数组兜底提取纯文本。"""
+    if not isinstance(message, list):
+        return ""
+    parts = []
+    for seg in message:
+        if isinstance(seg, dict) and seg.get("type") == "text":
+            parts.append((seg.get("data") or {}).get("text") or "")
+    return "".join(parts)
+
+
+def parse_history_msg(m: dict) -> Optional[Tuple[str, str, str, int]]:
+    """解析 get_group_msg_history 的单条消息 → (user_id, name, content, ts)。
+
+    无效消息返回 None。
+    """
+    sender = m.get("sender") or {}
+    uid = str(sender.get("user_id") or m.get("user_id") or "").strip()
+    if not uid:
+        return None
+    name = str(sender.get("card") or sender.get("nickname") or uid).strip()
+    content = str(m.get("raw_message") or "") or _text_from_segments(m.get("message"))
+    content = strip_cq(content).strip()[:1500]
+    try:
+        ts = int(m.get("time") or 0)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    return uid, name or uid, content, ts
 
 
 # ---------------- 时间 / 天数格式化 ----------------

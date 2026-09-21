@@ -38,5 +38,10 @@
     "description": "messages 原始消息保留天数（users 聚合表永久保留）",
     "type": "int",
     "default": 90
+  },
+  "history_max_count": {
+    "description": "/墓碑 初始化 单次最多回溯的历史消息条数",
+    "type": "int",
+    "default": 2000
   }
 }

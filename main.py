@@ -73,11 +73,12 @@ except ImportError:
     from astrbot.core.message.components import At, Plain, Image
 
 from .database import TombDatabase
-from .fetcher import fmt_days, fmt_ts, generate_epitaph, get_profile
+from .fetcher import (fmt_days, fmt_ts, generate_epitaph, get_profile,
+                      parse_history_msg)
 from .renderer import fallback_text, render_tombstone
 
 PLUGIN_NAME = "astrbot_plugin_cyber_tombstone"
-PLUGIN_VERSION = "v1.0.2"
+PLUGIN_VERSION = "v1.0.3"
 
 FLUSH_INTERVAL = 5          # 内存缓冲 flush 周期（秒）
 FLUSH_BATCH = 100           # 缓冲达到该条数立即 flush
@@ -97,6 +98,8 @@ SUB_ALIASES = {
     "遗忘": "forget", "抹去": "forget",
     "全部遗忘": "forget_all", "清空": "forget_all",
     "复活": "revive",
+    "初始化": "backfill", "回溯": "backfill", "补录": "backfill",
+    "init": "backfill",
 }
 
 
@@ -266,6 +269,9 @@ class CyberTombstone(Star):
                 yield event.plain_result(self._config_text())
             elif sub == "debug":
                 yield event.plain_result(await self._debug_text())
+            elif sub == "backfill":
+                async for r in self._cmd_backfill(event, group_id):
+                    yield r
             elif sub == "scan":
                 async for r in self._cmd_scan(event, group_id):
                     yield r
@@ -306,6 +312,7 @@ class CyberTombstone(Star):
             "/墓碑 清空 —— 清空本群全部记录（仅管理员）\n"
             "/墓碑 配置 —— 查看当前配置\n"
             "/墓碑 诊断 —— 墓园运行诊断\n"
+            "/墓碑 初始化 —— 回溯历史聊天记录（装插件前的也能统计）\n"
             "────────────────\n"
             "愿天堂没有已读不回。"
         )
@@ -470,6 +477,117 @@ class CyberTombstone(Star):
             except Exception as e:
                 logger.error(f"[cyber_tombstone] 渲染失败: {e}\n{traceback.format_exc()}")
         yield event.plain_result(fallback_text(data))
+
+    # ---------------- 历史回溯 ----------------
+
+    async def _cmd_backfill(self, event: AstrMessageEvent, group_id: str):
+        """初始化：通过 OneBot get_group_msg_history 回溯历史聊天记录。"""
+        bot = getattr(event, "bot", None)
+        if bot is None:
+            yield event.plain_result(
+                "🪦 初始化需要 aiocqhttp(NapCat) 平台支持，当前事件未携带 bot 实例。"
+            )
+            return
+        try:
+            limit = max(int(self._cfg("history_max_count", 2000)), 50)
+        except Exception:
+            limit = 2000
+
+        rec = await self.db.get_backfill(group_id)
+        seq = rec["oldest_seq"] if rec else None
+        already = rec["message_count"] if rec else 0
+        tip = f"（已回溯过 {already} 条，本次从上次游标继续）" if rec else ""
+        yield event.plain_result(f"🕯 开始回溯历史聊天记录{tip}，最多 {limit} 条…")
+
+        try:
+            self_id = str(event.get_self_id() or "")
+        except Exception:
+            self_id = ""
+
+        total = 0
+        oldest_ts = None
+        batch_no = 0
+        try:
+            gid = int(group_id)
+        except ValueError:
+            gid = group_id
+
+        while total < limit:
+            params = {"group_id": gid}
+            if seq is not None:
+                params["message_seq"] = seq
+            try:
+                resp = await bot.call_api("get_group_msg_history", **params)
+            except Exception as e:
+                logger.error(f"[cyber_tombstone] 回溯 API 失败: {e}")
+                yield event.plain_result(
+                    f"🪦 回溯中断：{e}（已导入 {total} 条，稍后可重新执行继续）"
+                )
+                return
+            msgs = resp.get("messages") if isinstance(resp, dict) else resp
+            if not msgs:
+                break
+
+            rows, agg = [], {}
+            for m in msgs:
+                parsed = parse_history_msg(m if isinstance(m, dict) else {})
+                if not parsed:
+                    continue
+                uid, name, content, ts = parsed
+                if uid == self_id:
+                    continue
+                rows.append((group_id, uid, name, content, ts))
+                oldest_ts = ts if oldest_ts is None else min(oldest_ts, ts)
+                item = agg.setdefault(
+                    (group_id, uid),
+                    {"user_name": name, "first_seen": ts, "last_seen": ts,
+                     "count": 0, "last_message": content},
+                )
+                item["first_seen"] = min(item["first_seen"], ts)
+                item["last_seen"] = max(item["last_seen"], ts)
+                item["count"] += 1
+                if ts >= item["last_seen"]:
+                    item["last_message"] = content
+
+            if rows:
+                await self.db.insert_messages(rows)
+                await self.db.upsert_users(agg)
+                total += len(rows)
+
+            # 游标前移（message_seq 缺失用 message_id 兜底）
+            seqs = []
+            for m in msgs:
+                try:
+                    v = int(m.get("message_seq") or m.get("message_id") or 0)
+                    if v:
+                        seqs.append(v)
+                except (TypeError, ValueError):
+                    continue
+            if not seqs:
+                break
+            new_seq = min(seqs)
+            if seq is not None and new_seq >= seq:
+                break  # 游标不前进，防死循环
+            seq = new_seq
+            batch_no += 1
+            await self.db.set_backfill(group_id, seq, oldest_ts or 0, len(rows))
+            if batch_no % 5 == 0 and total + already:
+                yield event.plain_result(f"🕯 已回溯 {total + already} 条…")
+            await asyncio.sleep(0.3)  # 温和限速防风控
+
+        summary = await self.db.group_summary(group_id)
+        if total == 0 and already == 0:
+            yield event.plain_result(
+                "🪦 没有拉到历史消息（可能已到群记录最底层，或接口不可用）。"
+            )
+            return
+        yield event.plain_result(
+            "✅ 回溯完成\n"
+            f"· 本次导入：{total} 条\n"
+            f"· 累计记录：{summary.get('msgs', 0)} 条 / {summary.get('users', 0)} 人\n"
+            f"· 最早记录：{fmt_ts(summary.get('first_seen'))}\n"
+            f"再次执行可继续向更早回溯，潜水统计即刻生效。"
+        )
 
     # ---------------- 自动扫描 ----------------
 
