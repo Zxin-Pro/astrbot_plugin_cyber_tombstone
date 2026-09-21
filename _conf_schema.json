@@ -1,0 +1,42 @@
+{
+  "inactive_days": {
+    "description": "潜水判定阈值（天）：超过该天数未发言的群友将被视为潜水",
+    "type": "int",
+    "default": 30
+  },
+  "auto_scan_enabled": {
+    "description": "是否开启自动扫描（到点自动为潜水群友立碑并推送）",
+    "type": "bool",
+    "default": true
+  },
+  "auto_scan_time": {
+    "description": "自动扫描时间（HH:MM，24 小时制）",
+    "type": "string",
+    "default": "20:00"
+  },
+  "push_target": {
+    "description": "自动扫描结果推送目标群号（逗号分隔）；留空则发送到各群本身",
+    "type": "string",
+    "default": ""
+  },
+  "max_scan_results": {
+    "description": "单次扫描最多返回人数",
+    "type": "int",
+    "default": 10
+  },
+  "enable_image_render": {
+    "description": "是否启用图片渲染（关闭后仅回复 Markdown 文本）",
+    "type": "bool",
+    "default": true
+  },
+  "enable_record": {
+    "description": "是否记录群消息（隐私开关，关闭后不再记录新消息，已有记录可用 /tomb forget 清除）",
+    "type": "bool",
+    "default": true
+  },
+  "message_retention_days": {
+    "description": "messages 原始消息保留天数（users 聚合表永久保留）",
+    "type": "int",
+    "default": 90
+  }
+}
