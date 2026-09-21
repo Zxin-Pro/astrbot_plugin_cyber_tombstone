@@ -77,8 +77,39 @@ from .fetcher import (fmt_days, fmt_ts, generate_epitaph, get_profile,
                       parse_history_msg)
 from .renderer import fallback_text, render_tombstone
 
+
+async def _call_onebot_api(bot, action: str, **params):
+    """兼容多种 aiocqhttp 封装的 OneBot API 调用。
+
+    注意：`bot.call_api(...)` 在 aiocqhttp 中并不存在——CQHttp.__getattr__ 会把
+    任意属性名当成 action 名传给 call_action，导致
+    "call_action() takes 2 positional arguments but 3 were given"。
+    正确路径优先级：bot.<action>()（__getattr__ → partial）→ call_action(action=)
+    → call_api()（其它封装兜底）。
+    """
+    attempts = []
+    api_attr = getattr(bot, action, None)
+    if callable(api_attr):
+        attempts.append(lambda: api_attr(**params))
+    call_action = getattr(bot, "call_action", None)
+    if callable(call_action):
+        attempts.append(lambda: call_action(action=action, **params))
+    call_api = getattr(bot, "call_api", None)
+    if callable(call_api):
+        attempts.append(lambda: call_api(action, **params))
+    last_err = None
+    for fn in attempts:
+        try:
+            return await fn()
+        except TypeError as e:
+            last_err = e
+            continue
+    if last_err:
+        raise last_err
+    raise RuntimeError("当前平台不支持 OneBot API 调用")
+
 PLUGIN_NAME = "astrbot_plugin_cyber_tombstone"
-PLUGIN_VERSION = "v1.0.3"
+PLUGIN_VERSION = "v1.0.4"
 
 FLUSH_INTERVAL = 5          # 内存缓冲 flush 周期（秒）
 FLUSH_BATCH = 100           # 缓冲达到该条数立即 flush
@@ -516,14 +547,26 @@ class CyberTombstone(Star):
             params = {"group_id": gid}
             if seq is not None:
                 params["message_seq"] = seq
-            try:
-                resp = await bot.call_api("get_group_msg_history", **params)
-            except Exception as e:
-                logger.error(f"[cyber_tombstone] 回溯 API 失败: {e}")
-                yield event.plain_result(
-                    f"🪦 回溯中断：{e}（已导入 {total} 条，稍后可重新执行继续）"
-                )
-                return
+            count = 50
+            while True:
+                if count:
+                    params["count"] = count
+                try:
+                    resp = await _call_onebot_api(
+                        bot, "get_group_msg_history", **params)
+                    break
+                except TypeError:
+                    if count:      # 该实现不支持 count 参数，去掉重试
+                        count = 0
+                        params.pop("count", None)
+                        continue
+                    raise
+                except Exception as e:
+                    logger.error(f"[cyber_tombstone] 回溯 API 失败: {e}")
+                    yield event.plain_result(
+                        f"🪦 回溯中断：{e}（已导入 {total} 条，稍后可重新执行继续）"
+                    )
+                    return
             msgs = resp.get("messages") if isinstance(resp, dict) else resp
             if not msgs:
                 break
