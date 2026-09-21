@@ -52,7 +52,7 @@ from .fetcher import fmt_days, fmt_ts, generate_epitaph, get_profile
 from .renderer import fallback_text, render_tombstone
 
 PLUGIN_NAME = "astrbot_plugin_cyber_tombstone"
-PLUGIN_VERSION = "v1.0.0"
+PLUGIN_VERSION = "v1.0.1"
 
 FLUSH_INTERVAL = 5          # 内存缓冲 flush 周期（秒）
 FLUSH_BATCH = 100           # 缓冲达到该条数立即 flush
@@ -60,6 +60,19 @@ SCAN_POLL_INTERVAL = 30     # 定时扫描轮询周期（秒）
 LLM_TIMEOUT = 30            # LLM 悼词超时（秒）
 AUTO_BURY_LIMIT = 10        # 自动扫描单群最多立碑人数
 AUTO_BURY_FLOOD = 20        # 潜水人数超过该值时只取最早发言的 10 人
+
+# 中文子指令别名 → 内部英文（英文原名保持兼容）
+SUB_ALIASES = {
+    "帮助": "help", "说明": "help",
+    "配置": "config",
+    "诊断": "debug",
+    "潜水名单": "scan", "扫描": "scan", "潜水": "scan",
+    "墓碑列表": "list", "碑录": "list", "列表": "list",
+    "立碑": "bury", "安葬": "bury", "埋": "bury",
+    "遗忘": "forget", "抹去": "forget",
+    "全部遗忘": "forget_all", "清空": "forget_all",
+    "复活": "revive",
+}
 
 
 @register(
@@ -206,7 +219,8 @@ class CyberTombstone(Star):
         tokens = [t for t in (event.message_str or "").strip().split() if t]
         if tokens and tokens[0].lstrip("/").lower() in ("tomb", "墓碑", "赛博墓碑"):
             tokens = tokens[1:]
-        sub = tokens[0].lower() if tokens else ""
+        sub = tokens[0].lstrip("/").lower() if tokens else ""
+        sub = SUB_ALIASES.get(sub, sub)
 
         group_id = str(event.get_group_id() or "").strip()
         if not group_id:
@@ -258,15 +272,15 @@ class CyberTombstone(Star):
         return (
             "🪦 赛博墓园 · 指令一览\n"
             "────────────────\n"
-            "/tomb @某人 —— 预览 TA 的墓碑（不立碑）\n"
-            "/tomb bury @某人 —— 正式立碑（记录在案）\n"
-            "/tomb scan —— 扫描本群潜水名单\n"
-            "/tomb list —— 查看本群所有墓碑\n"
-            "/tomb revive @某人 —— 复活（移出墓碑名单）\n"
-            "/tomb forget @某人 —— 删除 TA 的全部记录（隐私）\n"
-            "/tomb forget_all —— 清空本群全部记录（仅管理员）\n"
-            "/tomb config —— 查看当前配置\n"
-            "/tomb debug —— 墓园运行诊断\n"
+            "/墓碑 @某人 —— 预览 TA 的墓碑（不立碑）\n"
+            "/墓碑 立碑 @某人 —— 正式立碑（记录在案）\n"
+            "/墓碑 潜水名单 —— 扫描本群潜水名单\n"
+            "/墓碑 墓碑列表 —— 查看本群所有墓碑\n"
+            "/墓碑 复活 @某人 —— 复活（移出墓碑名单）\n"
+            "/墓碑 遗忘 @某人 —— 删除 TA 的全部记录（隐私）\n"
+            "/墓碑 清空 —— 清空本群全部记录（仅管理员）\n"
+            "/墓碑 配置 —— 查看当前配置\n"
+            "/墓碑 诊断 —— 墓园运行诊断\n"
             "────────────────\n"
             "愿天堂没有已读不回。"
         )
@@ -320,13 +334,13 @@ class CyberTombstone(Star):
                 f"最后发言 {fmt_ts(u.get('last_seen'))}"
             )
         lines.append("────────────────")
-        lines.append("用 /tomb bury @某人 为其正式立碑。")
+        lines.append("用 /墓碑 立碑 @某人 为其正式立碑。")
         yield event.plain_result("\n".join(lines))
 
     async def _cmd_list(self, event: AstrMessageEvent, group_id: str):
         tombs = await self.db.list_tombs(group_id)
         if not tombs:
-            yield event.plain_result("🪦 本群还没有立过墓碑。用 /tomb bury @某人 送 TA 一程。")
+            yield event.plain_result("🪦 本群还没有立过墓碑。用 /墓碑 立碑 @某人 送 TA 一程。")
             return
         lines = [f"🪦 本群墓碑共 {len(tombs)} 座：", "────────────────"]
         for t in tombs[:20]:
@@ -341,7 +355,7 @@ class CyberTombstone(Star):
     async def _cmd_bury(self, event: AstrMessageEvent, group_id: str):
         target = self._extract_target(event, [])
         if not target:
-            yield event.plain_result("用法：/tomb bury @某人")
+            yield event.plain_result("用法：/墓碑 立碑 @某人")
             return
         async for r in self._make_tombstone(event, group_id, target, bury=True):
             yield r
@@ -358,7 +372,7 @@ class CyberTombstone(Star):
             return
         target = self._extract_target(event, [])
         if not target:
-            yield event.plain_result(f"用法：/tomb {sub} @某人")
+            yield event.plain_result(f"用法：/墓碑 {'遗忘' if sub == 'forget' else '复活'} @某人")
             return
         user_id, user_name = target
         if sub == "forget":
@@ -397,7 +411,7 @@ class CyberTombstone(Star):
 
         if bury and await self.db.has_tomb(group_id, user_id):
             yield event.plain_result(
-                f"🪦 {user_name} 已有墓碑在册，不可重复安葬（可用 /tomb revive 复活）。"
+                f"🪦 {user_name} 已有墓碑在册，不可重复安葬（可用 /墓碑 复活 移出名单）。"
             )
             return
 
