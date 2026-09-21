@@ -19,20 +19,45 @@ try:  # 插件元信息（老版本无此模块，忽略即可）
 except ImportError:  # pragma: no cover
     from astrbot.api.event import AstrMessageEvent
     from astrbot.core import logger
-    from astrbot.core.star import Context, Star, register
+    from astrbot.core.star import Context, Star
+    # 注意：不能 `from astrbot.core.star import register`——register 不是
+    # core.star.__init__ 的导出符号，Python 会兜底绑定同名子模块（模块对象），
+    # 导致 @register(...) 报 'module' object is not callable。
+    try:
+        from astrbot.core.star.register import register_star as register
+    except ImportError:
+        from astrbot.core.star import register
 
-try:
+# register 若被解析成模块（老版本布局差异），逐个候选修正
+if not callable(register):
+    try:
+        from astrbot.core.star.register import register_star as register
+    except ImportError:
+        pass
+
+try:  # MessageChain: api → api.event → core 显式路径
     from astrbot.api import MessageChain
 except ImportError:
     try:
-        from astrbot.core.message.message_event_result import MessageChain
+        from astrbot.api.event import MessageChain
     except ImportError:
-        MessageChain = None
+        try:
+            from astrbot.core.message.message_event_result import MessageChain
+        except ImportError:
+            MessageChain = None
 
-try:
+try:  # filter 只能来自 api.event.filter（re-export 装饰器），绝不能是同名子模块
     from astrbot.api.event import filter
 except ImportError:
     from astrbot.api import filter
+
+# filter.command 若不可调用（被解析成子模块），用 importlib 显式取 api.event.filter 包
+if not callable(getattr(filter, "command", None)):
+    try:
+        import importlib as _il
+        filter = _il.import_module("astrbot.api.event.filter")
+    except ImportError:
+        pass
 
 try:
     EventMessageType = filter.EventMessageType
@@ -40,7 +65,7 @@ except AttributeError:
     try:
         from astrbot.api.event.filter import EventMessageType
     except ImportError:
-        from astrbot.core.star.register import EventMessageType
+        from astrbot.core.star.filter.event_message_type import EventMessageType
 
 try:
     from astrbot.api.message_components import At, Plain, Image
@@ -52,7 +77,7 @@ from .fetcher import fmt_days, fmt_ts, generate_epitaph, get_profile
 from .renderer import fallback_text, render_tombstone
 
 PLUGIN_NAME = "astrbot_plugin_cyber_tombstone"
-PLUGIN_VERSION = "v1.0.1"
+PLUGIN_VERSION = "v1.0.2"
 
 FLUSH_INTERVAL = 5          # 内存缓冲 flush 周期（秒）
 FLUSH_BATCH = 100           # 缓冲达到该条数立即 flush
